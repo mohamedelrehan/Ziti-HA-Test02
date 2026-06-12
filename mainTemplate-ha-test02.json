@@ -1,0 +1,1049 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "ha-test02.0.0",
+  "metadata": {
+    "description": "OpenZiti HA test02: 3 controllers + 3 routers first full cluster implementation attempt."
+  },
+  "parameters": {
+    "deploymentPrefix": {
+      "type": "string",
+      "defaultValue": "ziti-ha02"
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser"
+    },
+    "adminPassword": {
+      "type": "secureString"
+    },
+    "controllerVmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B2s"
+    },
+    "routerVmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B2s"
+    },
+    "dnsLabelPrefix": {
+      "type": "string"
+    },
+    "adminSourceAddressPrefix": {
+      "type": "string",
+      "defaultValue": "*"
+    },
+    "zitiAdminUser": {
+      "type": "string",
+      "defaultValue": "admin"
+    },
+    "zitiAdminPassword": {
+      "type": "secureString"
+    },
+    "runAptUpgrade": {
+      "type": "string",
+      "defaultValue": "true",
+      "allowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "repoRawBaseUrl": {
+      "type": "string",
+      "defaultValue": "https://raw.githubusercontent.com/mohamedelrehan/Ziti-HA-Test02/main"
+    },
+    "vnetName": {
+      "type": "string",
+      "defaultValue": "ziti-ha02-vnet"
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.96.0.0/16"
+    },
+    "infraSubnetName": {
+      "type": "string",
+      "defaultValue": "ziti-ha-infra-subnet"
+    },
+    "infraSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.96.1.0/24"
+    },
+    "routerSubnetName": {
+      "type": "string",
+      "defaultValue": "ziti-ha-router-subnet"
+    },
+    "routerSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.96.2.0/24"
+    },
+    "controller01Zone": {
+      "type": "string",
+      "defaultValue": "1",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "controller02Zone": {
+      "type": "string",
+      "defaultValue": "2",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "controller03Zone": {
+      "type": "string",
+      "defaultValue": "3",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "router01Zone": {
+      "type": "string",
+      "defaultValue": "1",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "router02Zone": {
+      "type": "string",
+      "defaultValue": "2",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "router03Zone": {
+      "type": "string",
+      "defaultValue": "3",
+      "allowedValues": [
+        "1",
+        "2",
+        "3"
+      ]
+    }
+  },
+  "variables": {
+    "controllerScriptUrl": "[concat(parameters('repoRawBaseUrl'), '/azure-bootstrap-ziti-ha-controller-v3.sh')]",
+    "routerScriptUrl": "[concat(parameters('repoRawBaseUrl'), '/azure-bootstrap-ziti-ha-router-v3.sh')]",
+    "infraNsgName": "[concat(parameters('deploymentPrefix'), '-infra-nsg')]",
+    "routerNsgName": "[concat(parameters('deploymentPrefix'), '-router-nsg')]",
+    "routerRouteTableName": "[concat(parameters('deploymentPrefix'), '-router-rt')]",
+    "controller01VmName": "[concat(parameters('deploymentPrefix'), '-controller01')]",
+    "controller01Fqdn": "[concat(parameters('dnsLabelPrefix'), '-c01.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "controller01PrivateIp": "[concat('10.96.1.', string(add(4, 0)))]",
+    "controller02VmName": "[concat(parameters('deploymentPrefix'), '-controller02')]",
+    "controller02Fqdn": "[concat(parameters('dnsLabelPrefix'), '-c02.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "controller02PrivateIp": "[concat('10.96.1.', string(add(4, 1)))]",
+    "controller03VmName": "[concat(parameters('deploymentPrefix'), '-controller03')]",
+    "controller03Fqdn": "[concat(parameters('dnsLabelPrefix'), '-c03.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "controller03PrivateIp": "[concat('10.96.1.', string(add(4, 2)))]",
+    "router01VmName": "[concat(parameters('deploymentPrefix'), '-router01')]",
+    "router01Fqdn": "[concat(parameters('dnsLabelPrefix'), '-r01.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "router01PrivateIp": "[concat('10.96.2.', string(add(4, 0)))]",
+    "router02VmName": "[concat(parameters('deploymentPrefix'), '-router02')]",
+    "router02Fqdn": "[concat(parameters('dnsLabelPrefix'), '-r02.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "router02PrivateIp": "[concat('10.96.2.', string(add(4, 1)))]",
+    "router03VmName": "[concat(parameters('deploymentPrefix'), '-router03')]",
+    "router03Fqdn": "[concat(parameters('dnsLabelPrefix'), '-r03.', resourceGroup().location, '.cloudapp.azure.com')]",
+    "router03PrivateIp": "[concat('10.96.2.', string(add(4, 2)))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('infraNsgName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-SSH-Admin",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "22",
+              "sourceAddressPrefix": "[parameters('adminSourceAddressPrefix')]",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-Controller-1280-Internet-Test",
+            "properties": {
+              "priority": 110,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "1280",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-Controller-6262-Infra",
+            "properties": {
+              "priority": 120,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "6262",
+              "sourceAddressPrefix": "[parameters('infraSubnetPrefix')]",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-HTTP",
+            "properties": {
+              "priority": 130,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "80",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-HTTPS",
+            "properties": {
+              "priority": 140,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('routerNsgName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-SSH-Admin",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "22",
+              "sourceAddressPrefix": "[parameters('adminSourceAddressPrefix')]",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-Router-Link-3022",
+            "properties": {
+              "priority": 120,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3022",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-Router-Edge-10080",
+            "properties": {
+              "priority": 130,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "10080",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/routeTables",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('routerRouteTableName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "disableBgpRoutePropagation": false,
+        "routes": []
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[parameters('vnetName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('infraNsgName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('routerNsgName'))]",
+        "[resourceId('Microsoft.Network/routeTables', variables('routerRouteTableName'))]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[parameters('infraSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('infraSubnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('infraNsgName'))]"
+              }
+            }
+          },
+          {
+            "name": "[parameters('routerSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('routerSubnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('routerNsgName'))]"
+              },
+              "routeTable": {
+                "id": "[resourceId('Microsoft.Network/routeTables', variables('routerRouteTableName'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller01VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-c01')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller01VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller01VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('controller01PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('infraSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller01VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('controller01VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('controller01Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller01VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('controllerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('controller01VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller01VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('controller01VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('controller01VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('controllerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-controller-v3.sh 1 ', variables('controller01VmName'), ' ', variables('controller01Fqdn'), ' ', variables('controller01PrivateIp'), ' ', variables('controller02PrivateIp'), ' ', variables('controller03PrivateIp'), ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller02VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-c02')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller02VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller02VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('controller02PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('infraSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller02VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('controller02VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('controller02Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller02VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('controllerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('controller02VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller02VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('controller02VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('controller02VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('controllerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-controller-v3.sh 2 ', variables('controller02VmName'), ' ', variables('controller02Fqdn'), ' ', variables('controller01PrivateIp'), ' ', variables('controller02PrivateIp'), ' ', variables('controller03PrivateIp'), ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller03VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-c03')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('controller03VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller03VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('controller03PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('infraSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('controller03VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('controller03VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('controller03Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller03VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('controllerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('controller03VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('controller03VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('controller03VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('controller03VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('controllerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-controller-v3.sh 3 ', variables('controller03VmName'), ' ', variables('controller03Fqdn'), ' ', variables('controller01PrivateIp'), ' ', variables('controller02PrivateIp'), ' ', variables('controller03PrivateIp'), ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router01VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-r01')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router01VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router01VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('router01PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('routerSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router01VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('router01VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('router01Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router01VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('routerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('router01VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router01VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('router01VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines/extensions', variables('controller01VmName'), 'CustomScript')]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('router01VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('routerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-router-v3.sh ', 'https://', variables('controller01Fqdn'), ':1280', ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', variables('router01VmName'), ' ', variables('router01Fqdn'), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router02VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-r02')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router02VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router02VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('router02PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('routerSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router02VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('router02VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('router02Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router02VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('routerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('router02VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router02VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('router02VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines/extensions', variables('controller01VmName'), 'CustomScript')]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('router02VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('routerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-router-v3.sh ', 'https://', variables('controller01Fqdn'), ':1280', ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', variables('router02VmName'), ' ', variables('router02Fqdn'), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router03VmName'), '-pip')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('dnsLabelPrefix'), '-r03')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[concat(variables('router03VmName'), '-nic')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router03VmName'), '-pip'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('router03PrivateIp')]",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('routerSubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('router03VmName'), '-pip'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-07-01",
+      "name": "[variables('router03VmName')]",
+      "location": "[resourceGroup().location]",
+      "zones": [
+        "[parameters('router03Zone')]"
+      ],
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router03VmName'), '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('routerVmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('router03VmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('router03VmName'), '-nic'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-07-01",
+      "name": "[concat(variables('router03VmName'), '/CustomScript')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines/extensions', variables('controller01VmName'), 'CustomScript')]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('router03VmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.Extensions",
+        "type": "CustomScript",
+        "typeHandlerVersion": "2.1",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "fileUris": [
+            "[variables('routerScriptUrl')]"
+          ]
+        },
+        "protectedSettings": {
+          "commandToExecute": "[concat('bash azure-bootstrap-ziti-ha-router-v3.sh ', 'https://', variables('controller01Fqdn'), ':1280', ' ', parameters('zitiAdminUser'), ' ', base64(parameters('zitiAdminPassword')), ' ', variables('router03VmName'), ' ', variables('router03Fqdn'), ' ', parameters('runAptUpgrade'))]"
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "controller01Url": {
+      "type": "string",
+      "value": "[concat('https://', parameters('dnsLabelPrefix'), '-c01.', resourceGroup().location, '.cloudapp.azure.com:1280')]"
+    },
+    "validate": {
+      "type": "string",
+      "value": "Run scripts/validate-ha-test02.sh from the repo for validation commands."
+    }
+  }
+}
